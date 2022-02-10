@@ -90,7 +90,7 @@ static inline void float_to_float_div(float *arr, float* arr_in,
 {
 #pragma omp parallel for
   for (int i=0; i<nsamps; i++)
-    arr_in[i] = (float) round(arr[i]/div-0.01);
+    arr_in[i] = (float) arr[i]/div;
 }
 
 
@@ -237,14 +237,26 @@ int main(int argc, char* argv[])
     total_samps = MIN(total_samps, infilbanks[i]->header->nsamples);
   int nblocks = total_samps/nsamps_per_gulp;
 
-  int nbit = infilbanks[0]->header->nbits;
+  int nbits = infilbanks[0]->header->nbits;
 
   float *block;
   block = malloc(nsamps_per_gulp * infilbanks[0]->header->nchans
       *sizeof *block);
   unsigned char *block8bit;
-  block8bit = malloc(nsamps_per_gulp * infilbanks[0]->header->nchans
-      *sizeof *block8bit);
+  float *block32bit;
+  if (nbits == 8)
+    block8bit = malloc(nsamps_per_gulp * infilbanks[0]->header->nchans
+        *sizeof *block8bit);
+  else if (nbits == 32)
+    block32bit = malloc(nsamps_per_gulp * infilbanks[0]->header->nchans
+        *sizeof *block32bit);
+  else
+  {
+    fprintf(stderr, "ERROR on reading filterbank files: "
+        "only 8 and 32 bit modes are currently supported, got %i, exiting...",
+        nbits);
+    return EXIT_FAILURE;
+  }
 
   double final_scale=0;
   for (int i=0; i<ninfiles; i++)
@@ -267,23 +279,47 @@ int main(int argc, char* argv[])
 
     memset(block, 0, nsamps_chan*sizeof *block);
 
-    for (int ifile=0; ifile<ninfiles; ifile++)
+    if (nbits == 8)
     {
-      nmem = fread(block8bit, 1, nsamps_chan, infilbanks[ifile]->file);
-      if (nmem != nsamps_chan)
+      for (int ifile=0; ifile<ninfiles; ifile++)
       {
-        fprintf(stderr,"ERROR on reading filterbank files: "
-            "expected %li nsamps_chan, got %li. Exiting...\n",
-            nsamps_chan, nmem);
-        return EXIT_FAILURE;
+        nmem = fread(block8bit, 1, nsamps_chan, infilbanks[ifile]->file);
+        if (nmem != nsamps_chan)
+        {
+          fprintf(stderr,"ERROR on reading filterbank files: "
+              "expected %li nsamps_chan, got %li. Exiting...\n",
+              nsamps_chan, nmem);
+          return EXIT_FAILURE;
+        }
+
+        add_char_to_float_mult(block, block8bit, nsamps_chan, weights[ifile]);
       }
 
-      add_char_to_float_mult(block, block8bit, nsamps_chan, weights[ifile]);
+      float_to_char_div(block, block8bit, nsamps_chan, final_scale);
+
+      nmem = fwrite(block8bit, 1, nsamps_chan, outfilbank->file);
+    }
+    else if (nbits == 32)
+    {
+      for (int ifile=0; ifile<ninfiles; ifile++)
+      {
+        nmem = fread(block32bit, 4, nsamps_chan, infilbanks[ifile]->file);
+        if (nmem != nsamps_chan)
+        {
+          fprintf(stderr,"ERROR on reading filterbank files: "
+              "expected %li nsamps_chan, got %li. Exiting...\n",
+              nsamps_chan, nmem);
+          return EXIT_FAILURE;
+        }
+
+        add_float_to_float_mult(block, block32bit, nsamps_chan, weights[ifile]);
+      }
+
+      float_to_float_div(block, block32bit, nsamps_chan, final_scale);
+
+      nmem = fwrite(block32bit, 4, nsamps_chan, outfilbank->file);
     }
 
-    float_to_char_div(block, block8bit, nsamps_chan, final_scale);
-
-    nmem = fwrite(block8bit, 1, nsamps_chan, outfilbank->file);
     if (nmem != nsamps_chan)
     {
       fprintf(stderr,"ERROR on writting output filterbank file, exiting...\n");
@@ -317,6 +353,7 @@ int main(int argc, char* argv[])
   free(infilbanks);
   free(block);
   free(block8bit);
+  free(block32bit);
 
   return EXIT_SUCCESS;
 }
